@@ -2,13 +2,13 @@
   "name": "Mon Matin",
   "short_name": "Mon Matin",
   "lang": "fr",
-  "description": "Météo, trains Dijon ⇄ Le Creusot, actus, brief IA, listes et mémos.",
+  "description": "Météo, trains Dijon ⇄ Le Creusot, courses et mémo sur un ciel animé.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#111417",
-  "theme_color": "#111417",
+  "background_color": "#0c1626",
+  "theme_color": "#1d3b66",
   "icons": [
     {
       "src": "icon-192.png",

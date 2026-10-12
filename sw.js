@@ -1,5 +1,5 @@
-// Service worker : garde l'app disponible hors ligne. Les données (météo, trains, actus, IA) restent en ligne.
-const CACHE = "monmatin-4.5";
+// Service worker : garde l'app disponible hors ligne. Les données (météo, trains) restent en ligne.
+const CACHE = "monmatin-5.0";
 const SHELL = ["./", "index.html", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

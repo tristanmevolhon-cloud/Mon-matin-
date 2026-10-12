@@ -440,9 +440,7 @@
   }
   function renderClock() {
     const d = /* @__PURE__ */ new Date();
-    $("clock").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
-    const iso = todayISO(), where = isTrainDay(iso) ? "Le Creusot" : "Dijon";
-    $("date").innerHTML = esc(cap(d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" }))) + ` \xB7 <b>${where}</b>`;
+    $("clock").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()), $("date").textContent = cap(d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" }));
   }
   function renderWx() {
     const el = $("c-wx");
@@ -475,10 +473,34 @@
     }
     return null;
   }
+  let trTab = null, trTabAt = 0;
+  function curTab() {
+    if (trTab && Date.now() - trTabAt < 30 * 6e4) return trTab;
+    const today = todayISO();
+    return isTrainDay(today) && trainsFor((/* @__PURE__ */ new Date()).getHours() < 13 ? "aller" : "retour", today).some((t) => t.dep >= nowMin()) ? "train" : "bus";
+  }
+  function tabsHtml(tab, right) {
+    return `<div class="chead"><div class="tabs"><button data-tab="train" class="${tab === "train" ? "on" : ""}">Trains</button><button data-tab="bus" class="${tab === "bus" ? "on" : ""}">Bus</button></div><span class="label">${right}</span></div>`;
+  }
+  function bindTabs(el) {
+    el.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", (e) => {
+      e.stopPropagation(), trTab = b.dataset.tab, trTabAt = Date.now(), renderTr(), trTab === "bus" && loadBusRT(!1).then(() => {
+        curTab() === "bus" && renderTr();
+      });
+    }));
+  }
   function renderTr() {
-    const el = $("c-tr"), p = homePlan();
+    const el = $("c-tr"), tab = curTab();
+    if (el.classList.toggle("is-bus", tab === "bus"), tab === "bus") {
+      el.onclick = null, renderBus(el, tabsHtml("bus", "Divia")), bindTabs(el);
+      return;
+    }
+    renderTrainCard(el), bindTabs(el);
+  }
+  function renderTrainCard(el) {
+    const p = homePlan();
     if (!p) {
-      el.innerHTML = '<div class="chead"><span class="label">Trains</span></div><p class="hint">Aucun jour au Creusot cette semaine.</p>';
+      el.innerHTML = tabsHtml("train", "") + '<p class="hint">Aucun jour au Creusot cette semaine.</p>';
       return;
     }
     const row = (t, i, iso, d) => `<div class="trow${i === 0 ? " first" : ""}">${timeHtml(t)}<span class="a num">\u2192 ${hm(t.arr)}</span>${voieChip(t, iso, d || p.d)}${chipFor(t, iso)}</div>`, shown = p.list.slice(0, 3);
@@ -492,7 +514,7 @@
         break;
       }
     const src = isLive(p.iso) ? "Temps r\xE9el SNCF" : token && trainErr ? "Indicatif \xB7 " + trainErr : "Horaires indicatifs";
-    el.innerHTML = `<div class="chead"><span class="label">${p.title ? esc(p.title) + " \xB7 " : ""}Trains directs</span><span class="label">Tous \u203A</span></div>
+    el.innerHTML = tabsHtml("train", (p.title ? esc(p.title) + " \xB7 " : "") + "Tous \u203A") + `
     <div class="route">${NAMES[p.d][0]} \u2192 ${NAMES[p.d][1]} <button class="sw" id="tr-swap" aria-label="Changer de sens">\u21C4</button></div>
     <div class="trows">${rows}</div>
     <div class="tfoot"><span>${esc(src)}</span><span class="num">${p.list[0] ? Math.round(p.list[0].dur || 53) + " min" : ""}</span></div>`, $("tr-swap").addEventListener("click", (e) => {
@@ -500,6 +522,241 @@
     }), el.onclick = () => {
       pDir = p.d, pDay = p.iso === todayISO() ? "today" : "tomorrow", show("trains");
     };
+  }
+  const BUS_CFG = [
+    { stop: "Perri\xE8res", line: "10", to: /ahuy|darcy/i, label: "Ahuy" },
+    { stop: "Perri\xE8res", line: "12", to: /colombi/i, label: "Colombi\xE8re" },
+    { stop: "Albert 1er", line: "L3", to: /capnord|epirey/i, label: "\xC9pirey" },
+    { stop: "Albert 1er", line: "13", to: /fontaine/i, label: "Fontaine" }
+  ], GTFS_URL = "https://www.data.gouv.fr/api/1/datasets/r/e0dbd217-15cd-4e28-9459-211a27511a34", GTFSRT_URL = "https://proxy.transport.data.gouv.fr/resource/divia-dijon-gtfs-rt-trip-update";
+  let busIdx = ls.get("divia1", null), busRT = null, busRTAt = 0, busErr = "", busBuilding = !1;
+  const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+  async function unzipEntries(buf, wanted) {
+    const u = new Uint8Array(buf), dv = new DataView(buf);
+    let e = u.length - 22;
+    for (; e > 0 && dv.getUint32(e, !0) !== 101010256; ) e--;
+    const n = dv.getUint16(e + 10, !0);
+    let p = dv.getUint32(e + 16, !0);
+    const out = {};
+    for (let i = 0; i < n; i++) {
+      const method = dv.getUint16(p + 10, !0), csize = dv.getUint32(p + 20, !0), off = dv.getUint32(p + 42, !0), nl = dv.getUint16(p + 28, !0), el = dv.getUint16(p + 30, !0), cl = dv.getUint16(p + 32, !0), name = new TextDecoder().decode(u.subarray(p + 46, p + 46 + nl)).replace(/^.*\//, "");
+      if (p += 46 + nl + el + cl, wanted.indexOf(name) < 0) continue;
+      const ln = dv.getUint16(off + 26, !0), le = dv.getUint16(off + 28, !0), data = u.subarray(off + 30 + ln + le, off + 30 + ln + le + csize);
+      method === 0 ? out[name] = new TextDecoder().decode(data) : out[name] = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+    }
+    return out;
+  }
+  function csvRows(text, keep) {
+    const lines = text.replace(/^﻿/, "").split(/\r?\n/), h = lines[0].split(",").map((x) => x.trim().replace(/^"|"$/g, "")), out = [];
+    for (let i = 1; i < lines.length; i++) {
+      const l = lines[i];
+      if (!l) continue;
+      const v = l.indexOf('"') < 0 ? l.split(",") : (l.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || []).map((x) => x.replace(/,$/, "").replace(/^"|"$/g, "").replace(/""/g, '"')), o = {};
+      h.forEach((k, j) => {
+        o[k] = v[j];
+      }), (!keep || keep(o)) && out.push(o);
+    }
+    return out;
+  }
+  const hms = (t) => {
+    const a = String(t).split(":");
+    return +a[0] * 3600 + +a[1] * 60 + (+a[2] || 0);
+  };
+  async function buildBusIndex() {
+    if (!busBuilding) {
+      if (typeof DecompressionStream > "u") {
+        busErr = "horaires th\xE9oriques indisponibles sur cet appareil (temps r\xE9el seul)";
+        return;
+      }
+      busBuilding = !0;
+      try {
+        const r = await fetch(GTFS_URL);
+        if (!r.ok) throw new Error("horaires Divia indisponibles (" + r.status + ")");
+        const f = await unzipEntries(await r.arrayBuffer(), ["routes.txt", "stops.txt", "trips.txt", "calendar.txt", "calendar_dates.txt", "stop_times.txt"]), routes = csvRows(f["routes.txt"]), stopNames = {};
+        BUS_CFG.forEach((c) => {
+          stopNames[norm(c.stop)] = 1;
+        });
+        const stops = csvRows(f["stops.txt"], (s) => stopNames[norm(s.stop_name)]), lines = BUS_CFG.map((c) => {
+          const rt = routes.find((x) => norm(x.route_short_name) === norm(c.line));
+          return {
+            c,
+            route: rt ? rt.route_id : null,
+            color: rt && rt.route_color ? "#" + rt.route_color : "#888",
+            text: rt && rt.route_text_color ? "#" + rt.route_text_color : "#fff",
+            stops: stops.filter((s) => norm(s.stop_name) === norm(c.stop)).map((s) => s.stop_id),
+            deps: []
+          };
+        }), routeSet = {};
+        lines.forEach((l) => {
+          l.route && (routeSet[l.route] = 1);
+        });
+        const trips = {};
+        csvRows(f["trips.txt"], (t) => routeSet[t.route_id]).forEach((t) => {
+          trips[t.trip_id] = t;
+        }), lines.forEach((l) => {
+          const score = {};
+          Object.keys(trips).forEach((id) => {
+            const t = trips[id];
+            t.route_id === l.route && l.c.to.test(t.trip_headsign || "") && (score[t.direction_id] = (score[t.direction_id] || 0) + 1);
+          }), l.dir = Object.keys(score).sort((a, b) => score[b] - score[a])[0];
+        });
+        const st = f["stop_times.txt"];
+        f["stop_times.txt"] = null;
+        const hdr = st.slice(0, st.indexOf(`
+`)).replace(/\r|﻿/g, "").split(",").map((x) => x.trim()), iT = hdr.indexOf("trip_id"), iD = hdr.indexOf("departure_time"), iA = hdr.indexOf("arrival_time"), iS = hdr.indexOf("stop_id"), iQ = hdr.indexOf("stop_sequence"), heads = [], services = {}, allStops = {};
+        lines.forEach((l) => l.stops.forEach((s) => {
+          allStops[s] = 1;
+        })), Object.keys(allStops).forEach((sid) => {
+          const pat = "," + sid + ",";
+          let k = st.indexOf(pat);
+          for (; k >= 0; ) {
+            const a = st.lastIndexOf(`
+`, k) + 1, b = st.indexOf(`
+`, k), v = st.slice(a, b < 0 ? void 0 : b).replace(/\r$/, "").split(",");
+            if (v[iS] === sid) {
+              const t = trips[v[iT]];
+              t && lines.forEach((l) => {
+                if (t.route_id !== l.route || t.direction_id !== l.dir || l.stops.indexOf(sid) < 0) return;
+                let hi = heads.indexOf(t.trip_headsign);
+                hi < 0 && (heads.push(t.trip_headsign), hi = heads.length - 1), services[t.service_id] = 1, l.deps.push([hms(v[iD] || v[iA]), t.service_id, hi, t.trip_id, +v[iQ], sid]);
+              });
+            }
+            k = st.indexOf(pat, k + 1);
+          }
+        }), lines.forEach((l) => l.deps.sort((x, y) => x[0] - y[0]));
+        const cal = csvRows(f["calendar.txt"] || `service_id
+`, (c) => services[c.service_id]).map((c) => [c.service_id, c.start_date, c.end_date, [c.sunday, c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday].map(Number).join("")]), cd = {};
+        csvRows(f["calendar_dates.txt"] || `service_id
+`, (c) => services[c.service_id]).forEach((c) => {
+          (cd[c.date] = cd[c.date] || {})[c.service_id] = +c.exception_type;
+        });
+        let until = "";
+        cal.forEach((c) => {
+          c[2] > until && (until = c[2]);
+        }), Object.keys(cd).forEach((d) => {
+          Object.keys(cd[d]).some((s) => cd[d][s] === 1) && d > until && (until = d);
+        }), busIdx = { at: Date.now(), until, heads, cal, cd, lines: lines.map((l) => ({ line: l.c.line, stop: l.c.stop, label: l.c.label, color: l.color, text: l.text, deps: l.deps })) }, ls.set("divia1", busIdx), busErr = "", note("bus : horaires Divia \xE0 jour (" + lines.map((l) => l.c.line + ":" + l.deps.length).join(" ") + ")");
+      } catch (e) {
+        busErr = e.message || String(e), note("bus : " + busErr);
+      }
+      busBuilding = !1;
+    }
+  }
+  function activeServices(iso) {
+    const ymd = iso.replace(/-/g, ""), wd = dateOf(iso).getDay(), on = {};
+    (busIdx.cal || []).forEach((c) => {
+      ymd >= c[1] && ymd <= c[2] && c[3].charAt(wd) === "1" && (on[c[0]] = 1);
+    });
+    const ex = (busIdx.cd || {})[ymd] || {};
+    return Object.keys(ex).forEach((s) => {
+      ex[s] === 1 ? on[s] = 1 : delete on[s];
+    }), on;
+  }
+  function decodeTripUpdates(buf) {
+    const u = new Uint8Array(buf);
+    function vint(s) {
+      let lo = 0, hi = 0, shift = 0, b;
+      do
+        b = u[s.p++], shift < 28 ? lo += (b & 127) * Math.pow(2, shift) : shift === 28 ? (lo += (b & 15) * Math.pow(2, 28), hi += b >> 4 & 7) : hi += (b & 127) * Math.pow(2, shift - 32), shift += 7;
+      while (b & 128);
+      return hi >= 2147483648 ? lo - 4294967296 + (hi - 4294967295) * 4294967296 : lo + hi * 4294967296;
+    }
+    function msg(a, b) {
+      const s = { p: a }, o = {};
+      for (; s.p < b; ) {
+        const k = vint(s), fno = Math.floor(k / 8), w = k & 7;
+        let v;
+        if (w === 0) v = vint(s);
+        else if (w === 2) {
+          const l = vint(s);
+          v = [s.p, s.p + l], s.p += l;
+        } else if (w === 1) {
+          s.p += 8;
+          continue;
+        } else if (w === 5) {
+          s.p += 4;
+          continue;
+        } else break;
+        (o[fno] = o[fno] || []).push(v);
+      }
+      return o;
+    }
+    const str = (r) => new TextDecoder().decode(u.subarray(r[0], r[1])), sub = (o, f) => o[f] ? msg(o[f][0][0], o[f][0][1]) : null, top = msg(0, u.length), trips = {};
+    return (top[2] || []).forEach((r) => {
+      const ent = msg(r[0], r[1]), tu = sub(ent, 3);
+      if (!tu) return;
+      const td = sub(tu, 1);
+      if (!td || !td[1]) return;
+      const id = str(td[1][0]), rel = td[4] ? td[4][0] : 0, stus = (tu[2] || []).map((x) => {
+        const s = msg(x[0], x[1]), a = sub(s, 2), ev = sub(s, 3) || a;
+        return { seq: s[1] ? s[1][0] : null, stop: s[4] ? str(s[4][0]) : "", time: ev && ev[2] ? ev[2][0] : null, delay: ev && ev[1] ? ev[1][0] : null, skip: s[5] ? s[5][0] === 1 : !1 };
+      });
+      trips[id] = { cancelled: rel === 3, stus };
+    }), trips;
+  }
+  async function loadBusRT(force) {
+    if (!(!force && Date.now() - busRTAt < 5e4)) {
+      busRTAt = Date.now();
+      try {
+        const r = await fetch(GTFSRT_URL, { cache: "no-store" });
+        if (!r.ok) throw new Error("temps r\xE9el Divia indisponible (" + r.status + ")");
+        busRT = { at: Date.now(), trips: decodeTripUpdates(await r.arrayBuffer()) };
+      } catch (e) {
+        note("bus RT : " + (e.message || e)), busRT && Date.now() - busRT.at > 10 * 6e4 && (busRT = null);
+      }
+    }
+  }
+  function busNext(l, n) {
+    const now = /* @__PURE__ */ new Date(), nowS = Math.floor(now.getTime() / 1e3);
+    new Date(now).setHours(0, 0, 0, 0);
+    const out = [], seen = {}, RT = busRT ? busRT.trips : {};
+    return [-1, 0, 1].forEach((k) => {
+      const iso = addDays(todayISO(), k), on = activeServices(iso), base = new Date(dateOf(iso));
+      base.setHours(0, 0, 0, 0);
+      const b0 = Math.floor(base.getTime() / 1e3);
+      l.deps.forEach((d) => {
+        if (!on[d[1]]) return;
+        let t = b0 + d[0], live2 = !1;
+        const rt = RT[d[3]];
+        if (rt) {
+          if (rt.cancelled) return;
+          const at = rt.stus.find((s) => s.stop === d[5] || s.seq != null && s.seq === d[4]);
+          if (at) {
+            if (at.skip) return;
+            at.time ? t = at.time : at.delay != null && (t += at.delay), live2 = !0;
+          } else if (rt.stus.length && t < nowS + 120) return;
+        }
+        t < nowS - 30 || t > nowS + 14 * 3600 || seen[d[3]] || (seen[d[3]] = 1, out.push({ t, live: live2, head: busIdx.heads[d[2]], sched: b0 + d[0] }));
+      });
+    }), out.sort((a, b) => a.t - b.t).slice(0, n);
+  }
+  function busWhen(p) {
+    const m = Math.round((p.t * 1e3 - Date.now()) / 6e4);
+    if (m <= 0) return "<b>\xE0 l\u2019arr\xEAt</b>";
+    if (m < 60) return `<b class="num">${m}</b> min`;
+    const d = new Date(p.t * 1e3);
+    return `<b class="num">${pad(d.getHours())}:${pad(d.getMinutes())}</b>`;
+  }
+  function renderBus(el, head) {
+    if (!busIdx) {
+      el.innerHTML = head + `<p class="hint">${busBuilding ? "Chargement des horaires Divia\u2026" : busErr ? esc(busErr) : "Horaires Divia en attente\u2026"}</p>`;
+      return;
+    }
+    const groups = {};
+    busIdx.lines.forEach((l) => {
+      (groups[l.stop] = groups[l.stop] || []).push(l);
+    });
+    const html = Object.keys(groups).map((stop) => `<div class="tsep">${esc(stop)}</div>` + groups[stop].map((l) => {
+      const next = busNext(l, 2);
+      return `<div class="brow"><span class="bline" style="background:${l.color};color:${l.text}">${esc(l.line)}</span>
+      <span class="bdest">\u2192 ${esc(l.label)}</span>
+      <span class="btimes">${next.length ? next.map((p, i) => `<span class="${p.live ? "live" : ""}${i ? " later" : ""}" title="${esc(p.head)}">${busWhen(p)}</span>`).join("") : '<span class="later">plus de bus</span>'}</span></div>`;
+    }).join("")).join(""), rtOk = busRT && Date.now() - busRT.at < 3 * 6e4;
+    el.innerHTML = head + `<div class="bus">${html}</div>
+    <div class="tfoot"><span>${rtOk ? '<i class="dot"></i>Temps r\xE9el Divia' : "Horaires th\xE9oriques Divia"}</span><span>${busIdx.until && busIdx.until < todayISO().replace(/-/g, "") ? "horaires \xE0 mettre \xE0 jour" : ""}</span></div>`;
+  }
+  async function refreshBus(force) {
+    (!busIdx || Date.now() - busIdx.at > 6048e5 || busIdx.until && busIdx.until < todayISO().replace(/-/g, "") || force === "index") && await buildBusIndex(), await loadBusRT(force === !0);
   }
   const saveShop = () => {
     ls.set("shop", shop), ls.set("shopHist", shopHist);
@@ -697,7 +954,7 @@
   document.addEventListener("webkitfullscreenchange", syncFs);
   syncFs();
   function renderSettings() {
-    $("token").value = token, $("token-status").textContent = token ? isLive() ? "Cl\xE9 valide, temps r\xE9el actif." : trainErr || "Cl\xE9 enregistr\xE9e." : "Aucune cl\xE9 : horaires indicatifs.", $("plan-days").innerHTML = [1, 2, 3, 4, 5, 6, 0].map((i) => `<button data-i="${i}" class="${planning.pattern[i] ? "on" : ""}">${WD[i]}</button>`).join(""), $("plan-days").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    $("token").value = token, $("bus-status").textContent = busBuilding ? "T\xE9l\xE9chargement\u2026" : busIdx ? "Horaires du " + new Date(busIdx.at).toLocaleDateString("fr-FR") + (busRT ? ", temps r\xE9el actif." : ".") : busErr || "Pas encore charg\xE9s.", $("token-status").textContent = token ? isLive() ? "Cl\xE9 valide, temps r\xE9el actif." : trainErr || "Cl\xE9 enregistr\xE9e." : "Aucune cl\xE9 : horaires indicatifs.", $("plan-days").innerHTML = [1, 2, 3, 4, 5, 6, 0].map((i) => `<button data-i="${i}" class="${planning.pattern[i] ? "on" : ""}">${WD[i]}</button>`).join(""), $("plan-days").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
       planning.pattern[+b.dataset.i] = !planning.pattern[+b.dataset.i], ls.set("planning", planning), renderSettings(), renderHome();
     })), $("anim-on").checked = !!animOn, $("voies-on").checked = !!voiesOn, $("fx-preview").value = fxPreview, readWall(), renderWallSettings(), $("setup-url").value || ($("setup-url").value = ls.get("webUrl", "") || (N ? "" : location.origin + location.pathname)), renderDiag();
   }
@@ -707,6 +964,7 @@
       "M\xE9t\xE9o : " + (weather ? "OK " + new Date(weather.at).toLocaleTimeString("fr-FR") : "\u2014"),
       "Trains : " + (isLive() ? "temps r\xE9el" : token ? "indicatifs" + (trainErr ? " \u2014 " + trainErr : "") : "sans cl\xE9"),
       "Voies : " + (voiesOn ? voieErr || (voieAt ? "flux lu \xE0 " + new Date(voieAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "en attente d\u2019un train dans les 40 min") : "d\xE9sactiv\xE9es"),
+      "Bus : " + (busIdx ? "horaires du " + new Date(busIdx.at).toLocaleDateString("fr-FR") + " (valables jusqu\u2019au " + (busIdx.until || "?").replace(/(\d{4})(\d{2})(\d{2})/, "$3/$2") + ")" : busErr || "\u2014") + (busRT ? " \xB7 temps r\xE9el " + new Date(busRT.at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : ""),
       "Fond : " + fx.describe(),
       ""
     ].concat(log).join(`
@@ -727,6 +985,9 @@
       return;
     }
     $("token-status").textContent = "Test de la cl\xE9\u2026", await loadTrains(!0), $("token-status").textContent = isLive() ? "Cl\xE9 valide, temps r\xE9el actif." : trainErr ? "\xC9chec : " + trainErr : "Cl\xE9 valide (aucun direct trouv\xE9 aujourd\u2019hui).", renderHome();
+  });
+  $("bus-update").addEventListener("click", async () => {
+    $("bus-status").textContent = "T\xE9l\xE9chargement des horaires Divia\u2026", await buildBusIndex(), await loadBusRT(!0), $("bus-status").textContent = busIdx && !busErr ? "Horaires \xE0 jour." : "\xC9chec : " + busErr, renderTr(), renderDiag();
   });
   $("voies-on").addEventListener("change", () => {
     voiesOn = $("voies-on").checked, ls.set("voiesOn", voiesOn), voiesOn ? loadVoies(!0).then(renderAll) : renderAll();
@@ -980,7 +1241,7 @@
       wxErr = "";
     }, (e) => {
       wxErr = e.message, note(e.message);
-    }), loadTrains(force).then(() => loadVoies(force))]), busy = !1, fx.update(), renderAll());
+    }), loadTrains(force).then(() => loadVoies(force)), refreshBus(force).catch((e) => note("bus : " + e.message))]), busy = !1, fx.update(), renderAll());
   }
   window.onAppResume = () => {
     Date.now() - lastLoad > 5 * 6e4 ? refresh() : (renderAll(), fx.update());
@@ -988,7 +1249,9 @@
   let lastMinute = -1;
   setInterval(() => {
     const m = (/* @__PURE__ */ new Date()).getMinutes();
-    m !== lastMinute && (lastMinute = m, renderClock(), view === "home" && renderTr(), m % 5 === 0 && fx.update());
+    m !== lastMinute && (lastMinute = m, renderClock(), view === "home" && renderTr(), view === "home" && curTab() === "bus" && !document.hidden && $("night").hidden && loadBusRT(!1).then(() => {
+      curTab() === "bus" && renderTr();
+    }), m % 5 === 0 && fx.update());
   }, 5e3);
   setInterval(() => {
     !document.hidden && $("night").hidden && refresh();
@@ -999,7 +1262,11 @@
   fx.update();
   show("home", !0);
   refresh();
-  window.MonMatin = { fx, memo, findPlatform, loadVoies, get voies() {
+  window.MonMatin = { fx, memo, buildBusIndex, loadBusRT, decodeTripUpdates, get busIdx() {
+    return busIdx;
+  }, renderTr, setTab(t) {
+    trTab = t, trTabAt = Date.now(), renderTr();
+  }, findPlatform, loadVoies, get voies() {
     return voies;
   }, addShop, get shop() {
     return shop;

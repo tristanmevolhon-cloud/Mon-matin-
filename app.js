@@ -539,10 +539,20 @@
   const memo = function() {
     let data = ls.get("memo5", null);
     data || (data = { strokes: [] });
-    let color = "#ffffff", erasing = !1, cur = null, confirmT = null;
+    let color = ls.get("memoColor", "#ffffff"), width = ls.get("memoWidth", 4.2), erasing = !1, cur = null, confirmT = null;
     const cv = $("memo-cv"), wrap = $("memo-wrap");
     let ctx = null, W = 0, H = 0, dpr = 1;
-    const lw = (s) => (s.e ? 30 : 4.2) * Math.max(0.7, Math.min(1.6, W / 820));
+    const lw = (s) => (s.e ? 30 : s.w || 4.2) * Math.max(0.7, Math.min(1.6, W / 820)), pager = $("pager");
+    function lockPage(on) {
+      if (pager.classList.toggle("drawing", on), !on) {
+        const left = PAGES.indexOf(view) * pager.clientWidth;
+        Math.abs(pager.scrollLeft - left) > 1 && (pager.scrollLeft = left), window.scrollTo(0, 0);
+      }
+    }
+    const stop = (e) => {
+      e.cancelable && e.preventDefault();
+    };
+    ["touchstart", "touchmove"].forEach((t) => cv.addEventListener(t, stop, { passive: !1 })), $("c-memo").addEventListener("touchmove", stop, { passive: !1 });
     function style(s) {
       ctx.globalCompositeOperation = s.e ? "destination-out" : "source-over", ctx.strokeStyle = s.e ? "#000" : s.c, ctx.fillStyle = ctx.strokeStyle, ctx.lineWidth = lw(s);
     }
@@ -576,22 +586,33 @@
         cv.setPointerCapture(e.pointerId);
       } catch (err) {
       }
-      cur = erasing ? { e: 1, p: [pos(e)] } : { c: color, p: [pos(e)] }, data.strokes.push(cur), ctx && (ctx.setTransform(dpr, 0, 0, dpr, 0, 0), ctx.lineCap = "round", style(cur), dot(cur, cur.p[0]), ctx.globalCompositeOperation = "source-over"), erasing || ($("memo-ph").hidden = !0);
+      lockPage(!0), cur = erasing ? { e: 1, p: [pos(e)] } : { c: color, w: width, p: [pos(e)] }, data.strokes.push(cur), ctx && (ctx.setTransform(dpr, 0, 0, dpr, 0, 0), ctx.lineCap = "round", style(cur), dot(cur, cur.p[0]), ctx.globalCompositeOperation = "source-over"), erasing || ($("memo-ph").hidden = !0);
     }), cv.addEventListener("pointermove", (e) => {
       if (!cur) return;
       const q = pos(e), last = cur.p[cur.p.length - 1];
       Math.abs(q[0] - last[0]) + Math.abs(q[1] - last[1]) < 15e-4 || (cur.p.push(q), ctx && (ctx.setTransform(dpr, 0, 0, dpr, 0, 0), ctx.lineCap = "round", style(cur), seg(cur, last, q), ctx.globalCompositeOperation = "source-over"));
     });
     const end = () => {
-      cur && (cur = null, data.strokes.length > 600 && (data.strokes = data.strokes.slice(-600)), save());
+      lockPage(!1), cur && (cur = null, data.strokes.length > 600 && (data.strokes = data.strokes.slice(-600)), save());
     };
     cv.addEventListener("pointerup", end), cv.addEventListener("pointercancel", end);
+    const pick = $("memo-pick"), custom = document.querySelector("#c-memo .pen.custom");
     function tools() {
-      document.querySelectorAll("#c-memo .pen").forEach((b) => b.classList.toggle("on", !erasing && b.dataset.c === color)), $("memo-erase").classList.toggle("on", erasing);
+      let preset = !1;
+      document.querySelectorAll("#c-memo .pen[data-c]").forEach((b) => {
+        const on = !erasing && b.dataset.c === color;
+        on && (preset = !0), b.classList.toggle("on", on);
+      }), custom.classList.toggle("on", !erasing && !preset), custom.style.setProperty("--c", color), document.querySelectorAll("#c-memo .size").forEach((b) => b.classList.toggle("on", +b.dataset.w === width)), $("memo-erase").classList.toggle("on", erasing), ls.set("memoColor", color), ls.set("memoWidth", width);
     }
-    return document.querySelectorAll("#c-memo .pen").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("#c-memo .pen[data-c]").forEach((b) => b.addEventListener("click", () => {
       color = b.dataset.c, erasing = !1, tools();
-    })), $("memo-erase").addEventListener("click", () => {
+    }));
+    const onPick = () => {
+      color = pick.value, erasing = !1, tools();
+    };
+    return pick.addEventListener("input", onPick), pick.addEventListener("change", onPick), document.querySelectorAll("#c-memo .size").forEach((b) => b.addEventListener("click", () => {
+      width = +b.dataset.w, erasing = !1, tools();
+    })), tools(), $("memo-erase").addEventListener("click", () => {
       erasing = !erasing, tools();
     }), $("memo-undo").addEventListener("click", () => {
       data.strokes.pop(), save(), redraw();
@@ -610,6 +631,7 @@
       data.strokes.push(s), save(), redraw();
     } };
   }();
+  ["gesturestart", "gesturechange"].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: !1 }));
   function renderMeteoPage() {
     const el = $("meteo-body");
     if (!weather) {

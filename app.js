@@ -14,7 +14,7 @@
       } catch (e) {
       }
     }
-  }, N = window.Native || null, uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6), SETUP_KEYS = ["token", "planning", "shop", "shopHist", "animOn", "webWall", "lists"];
+  }, N = window.Native || null, uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6), SETUP_KEYS = ["token", "planning", "shop", "shopHist", "animOn", "voiesOn", "webWall", "lists"];
   let setupImported = 0;
   (function() {
     const m = String(location.hash || "").match(/[#&]setup=([^&]+)/);
@@ -293,7 +293,9 @@
             const t = String(m.text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
             t && messages.indexOf(t) < 0 && messages.push(t);
           });
-        }), out.push({
+        });
+        const pc = (pl) => pl && pl.stop_point && pl.stop_point.platform_code || "";
+        out.push({
           sched,
           dep,
           arr,
@@ -303,6 +305,8 @@
           delay: dep - sched,
           status: jr.status || "",
           messages,
+          voie: pc(s.from),
+          voieArr: pc(s.to),
           stops: (s.stop_date_times || []).map((st) => ({ name: st.stop_point && st.stop_point.name || "", t: parseNav(st.departure_date_time || st.arrival_date_time) }))
         });
       });
@@ -352,6 +356,70 @@
     const L = liveDay(iso);
     return L && L[d] && L[d].length ? L[d] : staticTrains(d);
   }, cancelled = (t) => /NO_SERVICE/.test(t.status);
+  let voiesOn = ls.get("voiesOn", !0), voies = ls.get("voies", {}), voieAt = 0, voieBusy = !1, voieErr = "";
+  const SIRI_URL = "https://proxy.transport.data.gouv.fr/resource/sncf-siri-lite-estimated-timetable", STN = { aller: [/dijon/i, /creusot/i], retour: [/creusot/i, /dijon/i] }, uicOf = (st) => {
+    const m = st && String(st.id || "").match(/(\d{8})/);
+    return m ? m[1] : "";
+  };
+  function voieKey(iso, t, end) {
+    return iso + "|" + String(t.number || "").replace(/\D/g, "") + "|" + end;
+  }
+  function voieOf(t, iso, d, end) {
+    return (end === "D" ? t.voie : t.voieArr) || voies[voieKey(iso, t, end + d)] || "";
+  }
+  function findPlatform(feed, no, iso, uic, nameRe, kind) {
+    const re = new RegExp('[">\\s:]' + no + '["<\\s:]', "g");
+    let m, guard = 0;
+    for (; (m = re.exec(feed)) && guard++ < 40; ) {
+      let end = feed.indexOf("EstimatedVehicleJourney", m.index + 1);
+      (end < 0 || end - m.index > 12e4) && (end = m.index + 12e4);
+      const block = feed.slice(m.index, end);
+      if (block.indexOf(iso) < 0) continue;
+      const calls = block.split(/StopPointRef/);
+      for (let i = 1; i < calls.length; i++) {
+        const c = calls[i], sn = c.match(/StopPointName"?\s*[:>]\s*(?:\[\s*)?(?:\{\s*"value"\s*:\s*)?"?([^"<]{1,60})/);
+        if (!(uic && c.slice(0, 120).indexOf(uic) >= 0 || sn && nameRe.test(sn[1]))) continue;
+        const r = new RegExp(kind + 'PlatformName"?\\s*[:>]\\s*(?:\\[\\s*)?(?:\\{\\s*"value"\\s*:\\s*)?"?\\s*([A-Za-z0-9][A-Za-z0-9 -]{0,5})'), v = c.match(r);
+        if (v) return v[1].trim();
+      }
+      re.lastIndex = end;
+    }
+    return "";
+  }
+  function voieTargets() {
+    const out = [], now = nowMin(), iso = todayISO();
+    return isTrainDay(iso) && ["aller", "retour"].forEach((d) => trainsFor(d, iso).forEach((t) => {
+      t.number && t.dep >= now - 5 && t.dep <= now + 40 && !cancelled(t) && !(t.voie && t.voieArr) && out.push({ d, t });
+    })), out;
+  }
+  async function loadVoies(force) {
+    if (!voiesOn || voieBusy) return;
+    const targets = voieTargets();
+    if (targets.length && !(!force && Date.now() - voieAt < 4 * 6e4)) {
+      voieBusy = !0, voieAt = Date.now();
+      try {
+        const r = await httpGet(SIRI_URL, "", !1);
+        if (r.status !== 200) throw new Error("flux des voies indisponible (" + (r.status || r.body) + ")");
+        const iso = todayISO();
+        let found = 0;
+        targets.forEach((x) => {
+          const no = String(x.t.number).replace(/\D/g, "");
+          if (!no) return;
+          const st = stations ? x.d === "aller" ? [stations.dijon, stations.creusot] : [stations.creusot, stations.dijon] : [null, null], dv = findPlatform(r.body, no, iso, uicOf(st[0]), STN[x.d][0], "Departure"), av = findPlatform(r.body, no, iso, uicOf(st[1]), STN[x.d][1], "Arrival");
+          dv && (voies[voieKey(iso, x.t, "D" + x.d)] = dv, found++), av && (voies[voieKey(iso, x.t, "A" + x.d)] = av);
+        }), Object.keys(voies).forEach((k) => {
+          k.slice(0, 10) < iso && delete voies[k];
+        }), ls.set("voies", voies), voieErr = "", note("voies : " + found + " trouv\xE9e(s)");
+      } catch (e) {
+        voieErr = e.message, note("voies : " + e.message);
+      }
+      voieBusy = !1;
+    }
+  }
+  function voieChip(t, iso, d) {
+    const v = voieOf(t, iso, d, "D");
+    return v ? `<span class="chip voie">Voie ${esc(v)}</span>` : "";
+  }
   function chipFor(t, iso) {
     return cancelled(t) ? '<span class="chip bad">Supprim\xE9</span>' : t.delay > 0 ? `<span class="chip late">+${t.delay} min</span>` : isLive(iso) ? '<span class="chip ok">\xC0 l\u2019heure</span>' : "";
   }
@@ -413,14 +481,14 @@
       el.innerHTML = '<div class="chead"><span class="label">Trains</span></div><p class="hint">Aucun jour au Creusot cette semaine.</p>';
       return;
     }
-    const row = (t, i, iso) => `<div class="trow${i === 0 ? " first" : ""}">${timeHtml(t)}<span class="a num">\u2192 ${hm(t.arr)}</span>${chipFor(t, iso)}</div>`, shown = p.list.slice(0, 3);
+    const row = (t, i, iso, d) => `<div class="trow${i === 0 ? " first" : ""}">${timeHtml(t)}<span class="a num">\u2192 ${hm(t.arr)}</span>${voieChip(t, iso, d || p.d)}${chipFor(t, iso)}</div>`, shown = p.list.slice(0, 3);
     let rows = shown.map((t, i) => row(t, i, p.iso)).join("");
     if (p.iso === todayISO() && shown.length < 3)
       for (let k = 1; k <= 7; k++) {
         const iso = addDays(todayISO(), k);
         if (!isTrainDay(iso)) continue;
         const nd = "aller", more = trainsFor(nd, iso).slice(0, 3 - shown.length);
-        rows += `<div class="tsep">${k === 1 ? "Demain" : cap(dateOf(iso).toLocaleDateString("fr-FR", { weekday: "long" }))} \xB7 ${NAMES[nd][0]} \u2192 ${NAMES[nd][1]}</div>` + more.map((t) => row(t, 1, iso)).join("");
+        rows += `<div class="tsep">${k === 1 ? "Demain" : cap(dateOf(iso).toLocaleDateString("fr-FR", { weekday: "long" }))} \xB7 ${NAMES[nd][0]} \u2192 ${NAMES[nd][1]}</div>` + more.map((t) => row(t, 1, iso, nd)).join("");
         break;
       }
     const src = isLive(p.iso) ? "Temps r\xE9el SNCF" : token && trainErr ? "Indicatif \xB7 " + trainErr : "Horaires indicatifs";
@@ -573,10 +641,10 @@
     document.querySelectorAll("#tr-dir button").forEach((b) => b.classList.toggle("on", b.dataset.d === pDir)), document.querySelectorAll("#tr-day button").forEach((b) => b.classList.toggle("on", b.dataset.day === pDay));
     const now = nowMin(), list = trainsFor(pDir, iso), firstNext = pDay === "today" ? list.findIndex((t) => t.dep >= now) : 0;
     $("tr-all").innerHTML = (isTrainDay(iso) ? "" : `<p class="hint" style="margin:0 0 8px">${pDay === "today" ? "Aujourd\u2019hui" : "Demain"} est un jour \xE0 Dijon dans ton planning.</p>`) + list.map((t, i) => {
-      const k = pDir + t.sched, gone = pDay === "today" && t.dep < now, more = openTrain === k ? `<div class="more">TER ${esc(t.number || "")} \xB7 ${Math.round(t.dur || t.arr - t.sched)} min
+      const k = pDir + t.sched, gone = pDay === "today" && t.dep < now, vd = voieOf(t, iso, pDir, "D"), va = voieOf(t, iso, pDir, "A"), vtxt = vd || va ? " \xB7 " + (vd ? "d\xE9part voie " + esc(vd) : "") + (vd && va ? ", " : "") + (va ? "arriv\xE9e voie " + esc(va) : "") : pDay === "today" && t.dep - now <= 40 && t.dep >= now ? " \xB7 voie pas encore annonc\xE9e (affich\xE9e environ 20 min avant)" : "", more = openTrain === k ? `<div class="more">TER ${esc(t.number || "")} \xB7 ${Math.round(t.dur || t.arr - t.sched)} min${vtxt}
         ${t.stops && t.stops.length ? `<ol>${t.stops.map((s) => `<li><span class="num">${s.t != null ? hm(s.t) : ""}</span> ${esc(s.name)}</li>`).join("")}</ol>` : "<div>Arr\xEAts disponibles avec la cl\xE9 SNCF.</div>"}
         ${(t.messages || []).map((m) => `<div class="msg">${esc(m)}</div>`).join("")}</div>` : "";
-      return `<div class="trow${i === firstNext ? " first" : ""}${gone ? " gone" : ""}" data-k="${k}">${timeHtml(t)}<span class="a num">\u2192 ${hm(t.arr)}</span>${chipFor(t, iso)}${more}</div>`;
+      return `<div class="trow${i === firstNext ? " first" : ""}${gone ? " gone" : ""}" data-k="${k}">${timeHtml(t)}<span class="a num">\u2192 ${hm(t.arr)}</span>${voieChip(t, iso, pDir)}${chipFor(t, iso)}${more}</div>`;
     }).join(""), $("tr-all").querySelectorAll(".trow").forEach((r) => r.addEventListener("click", () => {
       openTrain = openTrain === r.dataset.k ? null : r.dataset.k, renderTrainsPage();
     })), $("tr-src").textContent = isLive(iso) ? "Temps r\xE9el SNCF, mis \xE0 jour \xE0 " + new Date(live.at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + "." : token ? "Horaires indicatifs" + (trainErr ? " (" + trainErr + ")" : "") + "." : "Horaires indicatifs. Ajoute ta cl\xE9 SNCF dans les r\xE9glages pour le temps r\xE9el.";
@@ -609,13 +677,14 @@
   function renderSettings() {
     $("token").value = token, $("token-status").textContent = token ? isLive() ? "Cl\xE9 valide, temps r\xE9el actif." : trainErr || "Cl\xE9 enregistr\xE9e." : "Aucune cl\xE9 : horaires indicatifs.", $("plan-days").innerHTML = [1, 2, 3, 4, 5, 6, 0].map((i) => `<button data-i="${i}" class="${planning.pattern[i] ? "on" : ""}">${WD[i]}</button>`).join(""), $("plan-days").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
       planning.pattern[+b.dataset.i] = !planning.pattern[+b.dataset.i], ls.set("planning", planning), renderSettings(), renderHome();
-    })), $("anim-on").checked = !!animOn, $("fx-preview").value = fxPreview, readWall(), renderWallSettings(), $("setup-url").value || ($("setup-url").value = ls.get("webUrl", "") || (N ? "" : location.origin + location.pathname)), renderDiag();
+    })), $("anim-on").checked = !!animOn, $("voies-on").checked = !!voiesOn, $("fx-preview").value = fxPreview, readWall(), renderWallSettings(), $("setup-url").value || ($("setup-url").value = ls.get("webUrl", "") || (N ? "" : location.origin + location.pathname)), renderDiag();
   }
   function renderDiag() {
     $("diag").textContent = [
       "Version " + VERSION + (N ? " (Android)" : " (web)"),
       "M\xE9t\xE9o : " + (weather ? "OK " + new Date(weather.at).toLocaleTimeString("fr-FR") : "\u2014"),
       "Trains : " + (isLive() ? "temps r\xE9el" : token ? "indicatifs" + (trainErr ? " \u2014 " + trainErr : "") : "sans cl\xE9"),
+      "Voies : " + (voiesOn ? voieErr || (voieAt ? "flux lu \xE0 " + new Date(voieAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "en attente d\u2019un train dans les 40 min") : "d\xE9sactiv\xE9es"),
       "Fond : " + fx.describe(),
       ""
     ].concat(log).join(`
@@ -636,6 +705,9 @@
       return;
     }
     $("token-status").textContent = "Test de la cl\xE9\u2026", await loadTrains(!0), $("token-status").textContent = isLive() ? "Cl\xE9 valide, temps r\xE9el actif." : trainErr ? "\xC9chec : " + trainErr : "Cl\xE9 valide (aucun direct trouv\xE9 aujourd\u2019hui).", renderHome();
+  });
+  $("voies-on").addEventListener("change", () => {
+    voiesOn = $("voies-on").checked, ls.set("voiesOn", voiesOn), voiesOn ? loadVoies(!0).then(renderAll) : renderAll();
   });
   $("anim-on").addEventListener("change", () => {
     animOn = $("anim-on").checked, ls.set("animOn", animOn), applyAnim();
@@ -821,7 +893,7 @@
       const s = scene;
       if (ctx.setTransform(dpr, 0, 0, dpr, 0, 0), ctx.clearRect(0, 0, W, H), stars.length && (ctx.fillStyle = "#fff", stars.forEach((st) => {
         ctx.globalAlpha = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * st.tw + st.ph)), ctx.beginPath(), ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2), ctx.fill();
-      }), ctx.globalAlpha = 1), (s.cat === "clear" || s.cat === "partly") && (s.night ? drawMoon(W * 0.58, H * 0.1) : s.phase === "dawn" || s.phase === "dusk" ? drawSun(s.phase === "dawn" ? W * 0.18 : W * 0.82, H * 0.62, !0) : drawSun(W * 0.6, H * 0.09, !1)), clouds.forEach((c) => {
+      }), ctx.globalAlpha = 1), (s.cat === "clear" || s.cat === "partly") && (s.night ? drawMoon(W < 560 ? W * 0.13 : W * 0.15, W < 560 ? 44 : Math.min(H * 0.1, 66)) : s.phase === "dawn" || s.phase === "dusk" ? drawSun(s.phase === "dawn" ? W * 0.18 : W * 0.82, H * 0.62, !0) : drawSun(W < 560 ? W * 0.12 : W * 0.14, W < 560 ? 40 : Math.min(H * 0.1, 64), !1)), clouds.forEach((c) => {
         c.x += c.v * dt, c.x > W + 40 && (c.x = -c.w - rnd(0, 200), c.y = rnd(-c.h * 0.35, H * (s.cat === "partly" ? 0.35 : 0.5))), ctx.drawImage(c.img, c.x, c.y, c.w, c.h);
       }), fogs.forEach((f) => {
         f.x += f.v * dt, f.x > W && (f.x = -f.w), f.x < -f.w && (f.x = W);
@@ -886,7 +958,7 @@
       wxErr = "";
     }, (e) => {
       wxErr = e.message, note(e.message);
-    }), loadTrains(force)]), busy = !1, fx.update(), renderAll());
+    }), loadTrains(force).then(() => loadVoies(force))]), busy = !1, fx.update(), renderAll());
   }
   window.onAppResume = () => {
     Date.now() - lastLoad > 5 * 6e4 ? refresh() : (renderAll(), fx.update());
@@ -905,7 +977,9 @@
   fx.update();
   show("home", !0);
   refresh();
-  window.MonMatin = { fx, memo, addShop, get shop() {
+  window.MonMatin = { fx, memo, findPlatform, loadVoies, get voies() {
+    return voies;
+  }, addShop, get shop() {
     return shop;
   }, renderAll, show, refresh, setPreview(v) {
     fxPreview = v, fx.update();

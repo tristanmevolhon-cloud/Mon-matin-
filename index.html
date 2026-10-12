@@ -80,6 +80,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .chip.ok { background: rgba(126, 226, 168, .18); color: var(--ok); }
 .chip.late { background: rgba(255, 197, 107, .2); color: var(--late); }
 .chip.bad { background: rgba(255, 138, 128, .22); color: var(--bad); }
+.chip.voie { background: rgba(255,255,255,.9); color: #13233a; }
 .chip.src { background: rgba(255,255,255,.12); color: var(--muted); font-weight: 600; }
 .pill { padding: 7px 14px; border-radius: 99px; background: rgba(255,255,255,.12); font-size: 14px; font-weight: 600; }
 .pill.on { background: rgba(255,255,255,.9); color: #13233a; }
@@ -99,12 +100,19 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 @media (max-width: 560px) {
   #home { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto minmax(220px, 40vh); grid-template-areas: "head" "wx" "tr" "shop" "memo"; overflow-y: auto; align-content: start; }
   #home > .card:not(#c-memo) { min-height: auto; }
+
   #c-memo { min-height: 300px; }
   #shop-list { max-height: 260px; }
   .memobar { flex-wrap: wrap; }
   .memobar .label { flex-basis: 100%; }
 }
-#head { grid-area: head; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 0 4px; text-shadow: 0 2px 14px rgba(0,0,0,.25); }
+#head { grid-area: head; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 0 4px; text-shadow: 0 2px 14px rgba(0,0,0,.25); }
+#head .center { grid-column: 2; text-align: center; }
+#head .tools { grid-column: 3; justify-self: end; }
+@media (max-width: 560px) {
+  #head { grid-template-columns: 1fr; }
+  #head .center, #head .tools { grid-column: 1; justify-self: center; }
+}
 #clock { font-size: clamp(46px, 7vw, 76px); font-weight: 200; letter-spacing: -.02em; line-height: .95; }
 #date { font-size: clamp(15px, 1.8vw, 19px); color: var(--muted); margin-top: 6px; }
 #date b { color: var(--ink); font-weight: 600; }
@@ -137,7 +145,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .trow.first { background: rgba(255,255,255,.16); }
 .trow .t { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
 .trow.first .t { font-size: 30px; }
-.trow .a { color: var(--muted); font-size: 14px; flex: 1; }
+.trow .a { color: var(--muted); font-size: 14px; flex: 1; white-space: nowrap; }
 .trow.gone { opacity: .45; }
 .tsep { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 6px 2px 0; }
 .trow s { color: var(--faint); font-size: 15px; margin-right: 4px; }
@@ -259,7 +267,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   <!-- Page 2 : accueil -->
   <section class="page" data-view="home" id="home">
     <header id="head">
-      <div><div id="clock" class="num">--:--</div><div id="date"></div></div>
+      <div class="center"><div id="clock" class="num">--:--</div><div id="date"></div></div>
       <div class="tools">
         <div id="dots"><button data-go="meteo" aria-label="Météo détaillée"></button><button data-go="home" class="on" aria-label="Accueil"></button><button data-go="trains" aria-label="Tous les trains"></button></div>
         <button class="iconbtn" id="fs-btn" aria-label="Plein écran"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="off-fs" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -319,6 +327,12 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
       <h2>Jours au Creusot (train)</h2>
       <p class="hint">Les autres jours, l’accueil n’affiche pas de trains à prendre.</p>
       <div class="days" id="plan-days"></div>
+    </section>
+
+    <section>
+      <h2>Voies des trains</h2>
+      <div class="row"><span>Afficher les voies</span><input type="checkbox" class="toggle" id="voies-on"></div>
+      <p class="hint">La SNCF annonce la voie environ 20 min avant le départ. L’app consulte le flux temps réel de la SNCF seulement dans les 40 min avant un train (environ 25 Mo par lecture, toutes les 4 min). Désactive si tu es en 4G.</p>
     </section>
 
     <section>
